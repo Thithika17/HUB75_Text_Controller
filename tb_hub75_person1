@@ -1,0 +1,241 @@
+`timescale 1ns/1ps
+
+module tb_hub75_person1;
+
+    // 1. Basic data types and DUT interface
+    logic       clk;
+    logic       rst_n;
+    logic [7:0] ascii_in;
+    logic [2:0] char_sel;
+    logic       load;
+
+    wire HUB75_CLK, HUB75_A, HUB75_B, HUB75_C;
+    wire HUB75_LAT, HUB75_OE;
+    wire HUB75_R1, HUB75_G1, HUB75_B1;
+    wire HUB75_R2, HUB75_G2, HUB75_B2;
+
+    // Constants
+    localparam time CLK_PERIOD = 20ns;
+    localparam int NUM_CHARS = 8;
+    localparam logic [7:0] SPACE = 8'h20;
+
+    // typedef + enum for named test phases
+    typedef enum logic [2:0] {
+        PH_RESET, PH_LOAD, PH_SCAN, PH_ROW_CHECK, PH_DONE
+    } test_phase_t;
+    test_phase_t phase;
+
+    // Fixed-size array, dynamic array, queue, and string examples
+    byte expected_chars [0:NUM_CHARS-1];
+    byte dynamic_chars[];
+    byte char_queue[$];
+    string test_name;
+
+    int pass_count = 0;
+    int fail_count = 0;
+    int i;
+
+    // DUT is the project's top module: tests the full integrated design.
+    hub75_top dut (
+        .clk(clk), .rst_n(rst_n),
+        .ascii_in(ascii_in), .char_sel(char_sel), .load(load),
+        .HUB75_CLK(HUB75_CLK),
+        .HUB75_A(HUB75_A), .HUB75_B(HUB75_B), .HUB75_C(HUB75_C),
+        .HUB75_LAT(HUB75_LAT), .HUB75_OE(HUB75_OE),
+        .HUB75_R1(HUB75_R1), .HUB75_G1(HUB75_G1), .HUB75_B1(HUB75_B1),
+        .HUB75_R2(HUB75_R2), .HUB75_G2(HUB75_G2), .HUB75_B2(HUB75_B2)
+    );
+
+    // Clock generation
+    initial begin
+        clk = 1'b0;
+        forever #(CLK_PERIOD/2) clk = ~clk;
+    end
+
+    // Function: compare a single-bit result and return pass/fail
+    function automatic bit check_bit(input logic actual,
+                                     input logic expected,
+                                     input string message);
+        if (actual === expected) begin
+            $display("[PASS] %s", message);
+            return 1'b1;
+        end else begin
+            $error("[FAIL] %s: actual=%b expected=%b", message, actual, expected);
+            return 1'b0;
+        end
+    endfunction
+
+    // Void function: print current phase
+    function automatic void report_phase(input test_phase_t p);
+        case (p)
+            PH_RESET:     $display("\n--- PHASE: RESET ---");
+            PH_LOAD:      $display("\n--- PHASE: CHARACTER LOADING ---");
+            PH_SCAN:      $display("\n--- PHASE: HUB75 SCAN TIMING ---");
+            PH_ROW_CHECK: $display("\n--- PHASE: ROW ADDRESS ---");
+            PH_DONE:      $display("\n--- PHASE: COMPLETE ---");
+            default:      $display("--- PHASE: UNKNOWN ---");
+        endcase
+    endfunction
+
+    // Task: load one character through the top-level interface
+    task automatic load_character(input logic [2:0] slot,
+                                  input logic [7:0] code);
+        @(negedge clk);
+        char_sel = slot;
+        ascii_in = code;
+        load = 1'b1;
+        @(negedge clk);
+        load = 1'b0;
+    endtask
+
+    // Task: count check results
+    task automatic expect_bit(input logic actual,
+                              input logic expected,
+                              input string message);
+        if (check_bit(actual, expected, message)) pass_count++;
+        else fail_count++;
+    endtask
+
+    // Monitor-style procedural check of the RGB wiring at top-level outputs.
+    // This runs concurrently with the main directed test sequence.
+    always @(HUB75_R1 or HUB75_G1 or HUB75_B1 or
+             HUB75_R2 or HUB75_G2 or HUB75_B2) begin
+        if (rst_n === 1'b1) begin
+            if ((HUB75_R1 !== HUB75_G1) || (HUB75_R1 !== HUB75_B1)) begin
+                $error("Upper RGB mapping mismatch");
+                fail_count++;
+            end
+            if ((HUB75_R2 !== HUB75_G2) || (HUB75_R2 !== HUB75_B2)) begin
+                $error("Lower RGB mapping mismatch");
+                fail_count++;
+            end
+        end
+    end
+
+    initial begin
+        test_name = "Person 1 - Full HUB75 top-level directed verification";
+        $display("========================================================");
+        $display("%s", test_name);
+        $display("========================================================");
+
+        rst_n = 1'b0;
+        ascii_in = SPACE;
+        char_sel = '0;
+        load = 1'b0;
+        phase = PH_RESET;
+
+        expected_chars[0] = "A";
+        expected_chars[1] = "B";
+        expected_chars[2] = "C";
+        expected_chars[3] = "D";
+        expected_chars[4] = "E";
+        expected_chars[5] = "F";
+        expected_chars[6] = " ";
+        expected_chars[7] = "A";
+
+        dynamic_chars = new[NUM_CHARS];
+        foreach (dynamic_chars[k]) dynamic_chars[k] = expected_chars[k];
+        foreach (expected_chars[k]) char_queue.push_back(expected_chars[k]);
+        $display("Dynamic array size = %0d", dynamic_chars.size());
+        $display("Queue size = %0d; first character = '%s'",
+                 char_queue.size(), char_queue[0]);
+
+        // Hold reset long enough for the asynchronous reset to take effect.
+        repeat (3) @(negedge clk);
+        report_phase(phase);
+        expect_bit(HUB75_CLK, 1'b0, "HUB75 clock is low during reset");
+        expect_bit(HUB75_A, 1'b0, "Row address A is low during reset");
+        expect_bit(HUB75_B, 1'b0, "Row address B is low during reset");
+        expect_bit(HUB75_C, 1'b0, "Row address C is low during reset");
+
+        @(negedge clk);
+        rst_n = 1'b1;
+
+        // Load all eight characters through hub75_top's public input ports.
+        phase = PH_LOAD;
+        report_phase(phase);
+        for (i = 0; i < NUM_CHARS; i++)
+            load_character(i[2:0], expected_chars[i]);
+
+        // Check stored registers inside the integrated text controller.
+        // Hierarchical inspection is used only for this introductory test.
+        for (i = 0; i < NUM_CHARS; i++) begin
+            if (dut.u_text_ctrl.char_reg[i] === expected_chars[i]) begin
+                $display("[PASS] Character slot %0d loaded with '%s'", i,
+                         dut.u_text_ctrl.char_reg[i]);
+                pass_count++;
+            end else begin
+                $error("[FAIL] Slot %0d: got 0x%02h expected 0x%02h", i,
+                       dut.u_text_ctrl.char_reg[i], expected_chars[i]);
+                fail_count++;
+            end
+        end
+
+        $display("Queue pop example: removed '%s'", char_queue.pop_front());
+        $display("Queue size after pop = %0d", char_queue.size());
+
+        // Test register isolation through the top-level load interface.
+        load_character(3'd2, "Z");
+        if ((dut.u_text_ctrl.char_reg[2] === "Z") &&
+            (dut.u_text_ctrl.char_reg[1] === "B")) begin
+            $display("[PASS] Loading slot 2 does not alter slot 1");
+            pass_count++;
+        end else begin
+            $error("[FAIL] Character register isolation");
+            fail_count++;
+        end
+
+        // Scan driver checks: use internal phase signals only as observation
+        // points; all DUT inputs still enter through hub75_top's ports.
+        phase = PH_SCAN;
+        report_phase(phase);
+        wait (dut.shift_en === 1'b1);
+        expect_bit(HUB75_OE, 1'b1, "OE is HIGH during SHIFT (display disabled)");
+        expect_bit(HUB75_LAT, 1'b0, "LAT is LOW during SHIFT");
+
+        // Wait for latch phase; driver scans 32 pixel positions first.
+        wait (dut.latch_en === 1'b1);
+        expect_bit(HUB75_CLK, 1'b0, "HUB75 clock is LOW during LATCH");
+        expect_bit(HUB75_OE, 1'b1, "OE is HIGH during LATCH");
+        expect_bit(HUB75_LAT, 1'b1, "LAT is HIGH during LATCH");
+
+        // Wait for display phase (the RTL's DISPLAY_CYCLES is 20000).
+        wait (dut.display_en === 1'b1);
+        expect_bit(HUB75_LAT, 1'b0, "LAT returns LOW during DISPLAY");
+        expect_bit(HUB75_OE, 1'b0, "OE is LOW during DISPLAY (active-low enable)");
+
+        phase = PH_ROW_CHECK;
+        report_phase(phase);
+        // The first completed display period advances row 0 to row 1.
+        @(negedge dut.display_en);
+        #1;
+        if (dut.row_addr === 3'd1) begin
+            $display("[PASS] Row address advances from 0 to 1");
+            pass_count++;
+        end else begin
+            $error("[FAIL] Expected row 1, got %0d", dut.row_addr);
+            fail_count++;
+        end
+
+        // Verify active-low OE and the row address outputs remain mapped.
+        expect_bit(HUB75_A, dut.row_addr[0], "HUB75_A maps row_addr[0]");
+        expect_bit(HUB75_B, dut.row_addr[1], "HUB75_B maps row_addr[1]");
+        expect_bit(HUB75_C, dut.row_addr[2], "HUB75_C maps row_addr[2]");
+
+        phase = PH_DONE;
+        report_phase(phase);
+        $display("Test: %s", test_name);
+        $display("PASS count = %0d", pass_count);
+        $display("FAIL count = %0d", fail_count);
+        if (fail_count == 0) $display("OVERALL RESULT: PASS");
+        else $display("OVERALL RESULT: FAIL");
+        $finish;
+    end
+
+    // Safety timeout in case a DUT phase never occurs.
+    initial begin
+        #2ms;
+        $fatal(1, "TIMEOUT: HUB75 testbench did not finish");
+    end
+
+endmodule
